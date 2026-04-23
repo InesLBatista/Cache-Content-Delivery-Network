@@ -1,0 +1,3 @@
+Este é um ficheiro de teste no Servidor de Origem.
+O CDN deverá descarregar este ficheiro quando houver um 'Cache Miss'.
+Após um 'PURGE', o CDN deverá apagar a sua cópia local e descarregar este ficheiro novamente.
