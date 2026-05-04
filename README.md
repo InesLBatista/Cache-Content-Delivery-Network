@@ -12,4 +12,4 @@ This project implements a Content Delivery Network (CDN) system focused on minim
 - **Asynchronous I/O**: Uses `aiofiles` for handling heavy files.
 - **MQTT Invalidation**: Real-time PURGE mechanism to avoid stale data.
 - **Concurrency**: Support for multiple simultaneous clients.
-- **Dockerized**: Ready to run in containers with persistent storage.
+- **Dockerized**: Ready to run in containers with persistent storage
