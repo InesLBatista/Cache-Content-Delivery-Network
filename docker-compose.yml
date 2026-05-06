@@ -1,6 +1,6 @@
 version: '3.8'
 
-services:
+#services:
   # TODO:
   # 1. Define the 'origin' service:
   #    - Build from 'origin_server/' directory.
