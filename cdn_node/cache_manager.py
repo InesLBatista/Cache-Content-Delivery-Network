@@ -1,24 +1,3 @@
-# CDN Node - Cache Manager
-# TODO:
-# 1. Import aiofiles and os.
-# 2. Implement functions to:
-#    - Check if a file exists in the 'cache/' directory.
-#    - Asynchronously read a file from 'cache/'.
-#    - Asynchronously write a file to 'cache/'.
-#    - Delete a file from 'cache/' (PURGE logic).
-
-"""cdn_node.cache_manager
-
-Minimal responsibilities:
-- Manage the cache directory (ensure it exists).
-- Check for files presence in the cache.
-- Read/write files asynchronously using aiofiles.
-- Delete files (PURGE) safely.
-
-This implementation follows the same approach/style used in the other
-project files: small, asynchronous I/O helpers and simple configuration.
-"""
-
 import os
 import aiofiles
 import asyncio
