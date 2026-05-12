@@ -32,7 +32,7 @@ def on_message(client, userdata, msg):
         filename = data.get("file")
         
         if filename:
-            print(f"[!] Recebido PURGE para o arquivo: {filename}")
+            print(f"[PURGE] Received purge request for: {filename}")
             # Integra função assíncrona com loop do servidor
             loop = userdata.get("loop")
             if loop:
