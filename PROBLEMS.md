@@ -32,7 +32,7 @@ Implementada a função `_fetch_from_origin()` em `cdn_node/main.py`. Timeout de
 
 ---
 
-## Fase 1 – Concorrência robusta (evitar o efeito “thundering herd”)
+## Fase 1 – Concorrência robusta (evitar o efeito "thundering herd") ✅
 
 **Problema:** Se 1000 clientes pedirem o mesmo ficheiro que não está em cache, o CDN faria 1000 pedidos idênticos à origem, sobrecarregando-a.
 
