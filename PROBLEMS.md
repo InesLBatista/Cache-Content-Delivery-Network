@@ -5,29 +5,30 @@ O objectivo é evoluir de um protótipo funcional para uma plataforma tolerante 
 - Origin Server funcional (aiohttp + publicador MQTT)
 - CDN Node funcional (aiohttp + cache com aiofiles)
 - Cliente MQTT básico no CDN (recebe purges)
-- Persistência planeada mas **ainda não existe ficheiro docker-compose.yml** nem volumes configurados
-- Não há contentorização efectiva
+- ~~Persistência planeada mas **ainda não existe ficheiro docker-compose.yml** nem volumes configurados~~
+- ~~Não há contentorização efectiva~~
+- **Fase 0 concluída** — sistema containerizado, seguro e resiliente a falhas de rede
 
 ---
 
-## Fase 0 – Correções imediatas (estabilizar a base)
+## Fase 0 – Correções imediatas (estabilizar a base) ✅
 Implementar primeiro, antes de qualquer funcionalidade nova.
 
-### 0.1 Criar a orquestração com Docker e volumes persistentes
+### 0.1 Criar a orquestração com Docker e volumes persistentes ✅
 
-O sistema actual não tem Docker. Deve ser criado um ficheiro `docker-compose.yml` na raiz do projecto com três serviços: broker MQTT (usando a imagem oficial eclipse-mosquitto), servidor de origem e nó CDN. Cada serviço deve ter o seu próprio `Dockerfile` baseado em Python 3.11-slim. O volume do CDN deve ser persistente (tipo named volume) para que o cache sobreviva a reinícios do contentor. O broker MQTT também deve usar volumes para configuração e dados persistentes.
+~~O sistema actual não tem Docker.~~ Criado `docker-compose.yml` na raiz com três serviços: `mqtt-broker` (eclipse-mosquitto:2.0), `origin` e `cdn-node`. Cada serviço tem o seu `Dockerfile` baseado em `python:3.11-slim`. O volume `cdn_cache` é persistente (named volume) — o cache sobrevive a reinícios. O broker usa `mqtt_data` e `mqtt_logs` para persistência. Configuração do Mosquitto em `mosquitto/mosquitto.conf`.
 
-### 0.2 Alinhar portas e variáveis de ambiente
+### 0.2 Alinhar portas e variáveis de ambiente ✅
 
-O Origin Server corre actualmente na porta 8000. O CDN Node espera a origem em `http://origin:8080` – deve ser alterado para `http://origin:8000`. Todas as variáveis (ORIGIN_URL, MQTT_BROKER, CDN_PORT) devem ser definidas explicitamente no docker-compose.yml para evitar inconsistências.
+~~O CDN Node esperava a origem em `http://origin:8080`~~ — corrigido para `http://origin:8000`. As variáveis `ORIGIN_URL`, `MQTT_BROKER` e `CDN_PORT` estão definidas explicitamente no `docker-compose.yml`.
 
-### 0.3 Reforçar a segurança contra path traversal
+### 0.3 Reforçar a segurança contra path traversal ✅
 
-No tratador de pedidos do CDN, a validação do nome do ficheiro é insuficiente. Deve ser adicionada uma verificação que rejeite qualquer nome que contenha `..` ou que comece por `/` ou `\`. Além disso, após normalizar o caminho absoluto, deve confirmar-se que este começa pelo directório de cache definido; caso contrário, retornar 403.
+Implementada a função `_safe_filename()` em `cdn_node/main.py`. Rejeita nomes com `..`, que comecem por `/` ou `\`, ou que contenham `\`. Adicionalmente, resolve o caminho com `os.path.realpath` e confirma que está dentro do `CACHE_DIR` — devolve **403 Forbidden** em caso de violação.
 
-### 0.4 Adicionar timeout e retry no pedido à origem
+### 0.4 Adicionar timeout e retry no pedido à origem ✅
 
-O pedido HTTP do CDN para a origem pode ficar eternamente à espera. Deve ser imposto um timeout global de 10 segundos e um timeout de ligação de 5 segundos. Para maior robustez, o CDN deve tentar novamente até 3 vezes com um atraso exponencial (1s, 2s, 4s) antes de desistir e devolver erro ao cliente.
+Implementada a função `_fetch_from_origin()` em `cdn_node/main.py`. Timeout de ligação: 5 s; timeout total: 10 s. Até 3 tentativas com backoff exponencial (1 s → 2 s → 4 s). Erros de rede devolvem **503 Service Unavailable**; respostas de erro da origem devolvem **502 Bad Gateway**.
 
 ---
 

@@ -25,24 +25,83 @@ from aiohttp import web
 import cache_manager
 import mqtt_client
 
-# Configuration 
+# Configuration
 
-ORIGIN_URL = os.getenv("ORIGIN_URL", "http://origin:8000")
-CDN_PORT   = int(os.getenv("CDN_PORT", "8081"))
+ORIGIN_URL      = os.getenv("ORIGIN_URL", "http://origin:8000")
+CDN_PORT        = int(os.getenv("CDN_PORT", "8081"))
 
-# Request handler
+# Timeout / retry settings (0.4)
+CONNECT_TIMEOUT = 5   # segundos para estabelecer ligação TCP
+TOTAL_TIMEOUT   = 10  # segundos para a resposta completa
+MAX_RETRIES     = 3   # tentativas antes de desistir
+RETRY_DELAYS    = [1, 2, 4]  # backoff exponencial em segundos
+
+# ── 0.3 – Validação de path traversal ────────────────────────────────────────
+
+def _safe_filename(filename: str) -> bool:
+    """Retorna True se o filename for seguro para usar como caminho de cache.
+
+    Rejeita:
+    - Qualquer segmento com '..' (path traversal)
+    - Caminhos absolutos (começam por '/' ou '\\')
+    - Nomes com '\\' (separador Windows, inesperado aqui)
+    - Caminhos que, após resolução, saiam fora do CACHE_DIR
+    """
+    if ".." in filename or filename.startswith("/") or filename.startswith("\\") or "\\" in filename:
+        return False
+
+    # Verificação adicional: o caminho resolvido tem de estar dentro do CACHE_DIR
+    resolved = os.path.realpath(os.path.join(cache_manager.CACHE_DIR, filename))
+    cache_root = os.path.realpath(cache_manager.CACHE_DIR)
+    return resolved.startswith(cache_root + os.sep) or resolved == cache_root
+
+# ── 0.4 – Fetch com timeout e retry exponencial ──────────────────────────────
+
+async def _fetch_from_origin(filename: str) -> bytes:
+    """Faz GET ao Origin Server com timeout e até MAX_RETRIES tentativas.
+
+    Raises:
+        aiohttp.ClientError / asyncio.TimeoutError após esgotar as tentativas.
+        ValueError se a origem devolver um status != 200.
+    """
+    timeout = aiohttp.ClientTimeout(
+        connect=CONNECT_TIMEOUT,
+        total=TOTAL_TIMEOUT,
+    )
+    url = f"{ORIGIN_URL}/{filename}"
+    last_exc: Exception = RuntimeError("No attempts made")
+
+    for attempt, delay in enumerate(RETRY_DELAYS, start=1):
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        raise ValueError(f"Origin returned {resp.status} for '{filename}'")
+                    return await resp.read()
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
+            last_exc = exc
+            if attempt < MAX_RETRIES:
+                print(f"[RETRY {attempt}/{MAX_RETRIES}] {filename} — {exc} — aguarda {delay}s")
+                await asyncio.sleep(delay)
+            else:
+                print(f"[FAIL] {filename} — esgotadas {MAX_RETRIES} tentativas: {exc}")
+
+    raise last_exc
+
+# ── Request handler ───────────────────────────────────────────────────────────
 
 async def handle_file_request(request: web.Request) -> web.Response:
     """GET /{filename}
 
-    Cache-hit  → read from local cache and serve.
-    Cache-miss → fetch from Origin Server, persist to cache, then serve.
+    Cache-hit  → lê do cache local e serve.
+    Cache-miss → vai buscar à origem (com timeout + retry), guarda no cache e serve.
     """
     filename = request.match_info["filename"]
 
-    # Security: reject path-traversal attempts
-    if ".." in filename or filename.startswith("/"):
-        return web.Response(status=400, text="Invalid filename")
+    # 0.3 – Rejeitar nomes de ficheiro inseguros
+    if not _safe_filename(filename):
+        print(f"[BLOCKED] path traversal attempt: {filename!r}")
+        return web.Response(status=403, text="Forbidden")
 
     # Cache hit
     if await cache_manager.exists(filename):
@@ -52,16 +111,13 @@ async def handle_file_request(request: web.Request) -> web.Response:
 
     # Cache miss
     print(f"[MISS] {filename} — fetching from origin")
-    origin_url = f"{ORIGIN_URL}/{filename}"
-
-    async with aiohttp.ClientSession() as session:
-        async with session.get(origin_url) as resp:
-            if resp.status != 200:
-                return web.Response(
-                    status=resp.status,
-                    text=f"Origin returned {resp.status} for '{filename}'"
-                )
-            data = await resp.read()
+    try:
+        data = await _fetch_from_origin(filename)
+    except ValueError as exc:
+        # Origem devolveu um status de erro (ex: 404)
+        return web.Response(status=502, text=str(exc))
+    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        return web.Response(status=503, text=f"Origin unreachable: {exc}")
 
     await cache_manager.write_file(filename, data)
     print(f"[CACHED] {filename}")
