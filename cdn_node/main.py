@@ -36,6 +36,10 @@ TOTAL_TIMEOUT   = 10  # segundos para a resposta completa
 MAX_RETRIES     = 3   # tentativas antes de desistir
 RETRY_DELAYS    = [1, 2, 4]  # backoff exponencial em segundos
 
+# Fase 1 – Singleflight: mapeia filename → Future em curso
+# Evita que N pedidos simultâneos ao mesmo ficheiro gerem N pedidos à origem.
+_inflight: dict[str, asyncio.Future] = {}
+
 # ── 0.3 – Validação de path traversal ────────────────────────────────────────
 
 def _safe_filename(filename: str) -> bool:
@@ -109,18 +113,33 @@ async def handle_file_request(request: web.Request) -> web.Response:
         data = await cache_manager.read_file(filename)
         return web.Response(body=data, content_type="application/octet-stream")
 
-    # Cache miss
+    # Fase 1 – Coalescing: se já há um download em curso para este ficheiro,
+    # aguarda o mesmo Future em vez de lançar outro pedido à origem.
+    if filename in _inflight:
+        print(f"[COALESCE] {filename} — aguarda download em curso")
+        try:
+            data = await asyncio.shield(_inflight[filename])
+        except ValueError as exc:
+            return web.Response(status=502, text=str(exc))
+        except (aiohttp.ClientError, asyncio.TimeoutError, Exception) as exc:
+            return web.Response(status=503, text=f"Origin unreachable: {exc}")
+        return web.Response(body=data, content_type="application/octet-stream")
+
+    # Cache miss — este pedido é o "líder": cria o Future e faz o download.
+    future: asyncio.Future = asyncio.get_running_loop().create_future()
+    _inflight[filename] = future
     print(f"[MISS] {filename} — fetching from origin")
     try:
         data = await _fetch_from_origin(filename)
-    except ValueError as exc:
-        # Origem devolveu um status de erro (ex: 404)
-        return web.Response(status=502, text=str(exc))
-    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-        return web.Response(status=503, text=f"Origin unreachable: {exc}")
-
-    await cache_manager.write_file(filename, data)
-    print(f"[CACHED] {filename}")
+        await cache_manager.write_file(filename, data)
+        print(f"[CACHED] {filename}")
+        future.set_result(data)
+    except Exception as exc:
+        future.set_exception(exc)
+        status = 502 if isinstance(exc, ValueError) else 503
+        return web.Response(status=status, text=str(exc))
+    finally:
+        _inflight.pop(filename, None)
 
     return web.Response(body=data, content_type="application/octet-stream")
 
