@@ -1,17 +1,56 @@
-version: '3.8'
+services:
+  # ─── MQTT Broker ────────────────────────────────────────────────────────────
+  mqtt-broker:
+    image: eclipse-mosquitto:2.0
+    container_name: mqtt-broker
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mqtt_data:/mosquitto/data
+      - mqtt_logs:/mosquitto/log
+    restart: unless-stopped
 
-#services:
-  # TODO:
-  # 1. Define the 'origin' service:
-  #    - Build from 'origin_server/' directory.
-  #    - Mount 'origin_server/storage' as a volume.
-  #    - Expose necessary ports.
-  
-  # 2. Define the 'cdn-node' service:
-  #    - Build from 'cdn_node/' directory.
-  #    - Mount 'cdn_node/cache' as a persistent volume.
-  #    - Link to 'origin' and 'mqtt-broker'.
-  
-  # 3. Define the 'mqtt-broker' service:
-  #    - Use an image like 'eclipse-mosquitto'.
-  #    - Expose port 1883.
+  # ─── Origin Server ──────────────────────────────────────────────────────────
+  origin:
+    build:
+      context: ./origin_server
+      dockerfile: Dockerfile
+    container_name: origin
+    ports:
+      - "8001:8000"   # host:8001 → container:8000 (8000 já em uso no host)
+    volumes:
+      - ./origin_server/storage:/app/storage
+    environment:
+      - MQTT_BROKER=mqtt-broker
+    depends_on:
+      - mqtt-broker
+    restart: unless-stopped
+
+  # ─── CDN Node ───────────────────────────────────────────────────────────────
+  cdn-node:
+    build:
+      context: ./cdn_node
+      dockerfile: Dockerfile
+    container_name: cdn-node
+    ports:
+      - "8081:8081"
+    volumes:
+      - cdn_cache:/app/cache
+    environment:
+      - ORIGIN_URL=http://origin:8000
+      - MQTT_BROKER=mqtt-broker
+      - CDN_PORT=8081
+    depends_on:
+      - origin
+      - mqtt-broker
+    restart: unless-stopped
+
+# ─── Volumes persistentes ────────────────────────────────────────────────────
+volumes:
+  cdn_cache:
+    driver: local
+  mqtt_data:
+    driver: local
+  mqtt_logs:
+    driver: local

@@ -27,7 +27,7 @@ import mqtt_client
 
 # Configuration 
 
-ORIGIN_URL = os.getenv("ORIGIN_URL", "http://origin:8080")
+ORIGIN_URL = os.getenv("ORIGIN_URL", "http://origin:8000")
 CDN_PORT   = int(os.getenv("CDN_PORT", "8081"))
 
 # Request handler
