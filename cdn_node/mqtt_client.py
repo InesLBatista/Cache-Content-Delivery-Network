@@ -10,7 +10,6 @@ import paho.mqtt.client as mqtt
 import json
 import asyncio
 import os
-import sys
 from cache_manager import purge_file
 
 # Configuração para o Docker

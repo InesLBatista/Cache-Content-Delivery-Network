@@ -44,15 +44,15 @@ Implementada a função `_fetch_from_origin()` em `cdn_node/main.py`. Timeout de
 
 O sistema actual usa QoS 0 e sessão não persistente, o que pode perder mensagens de purge se o CDN estiver temporariamente offline.
 
-### 2.1 Usar QoS 1 e sessão persistente
+### 2.1 Usar QoS 1 e sessão persistente ✅
 
 No publicador (Origin), a chamada publish deve incluir qos=1. No subscritor (CDN), ao criar o cliente MQTT deve passar `clean_session=False` para que o broker guarde as mensagens não entregues. Na callback de conexão, a subscrição deve também pedir qos=1.
 
-### 2.2 Configurar reconexão automática
+### 2.2 Configurar reconexão automática ✅
 
 O cliente MQTT deve tentar religar-se ao broker automaticamente se a ligação cair, com atraso progressivo. A biblioteca paho-mqtt já suporta `reconnect_delay_set()`; deve ser configurada com atrasos mínimos e máximos.
 
-### 2.3 Adicionar mensagem de última vontade (will)
+### 2.3 Adicionar mensagem de última vontade (will) ✅
 
 Definir um testamento que o broker publique se o CDN se desligar inesperadamente. Útil para monitorização e para que outros componentes saibam que aquele nó está inactivo.
 
