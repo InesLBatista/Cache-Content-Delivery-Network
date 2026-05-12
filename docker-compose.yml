@@ -41,6 +41,7 @@ services:
       - ORIGIN_URL=http://origin:8000
       - MQTT_BROKER=mqtt-broker
       - CDN_PORT=8081
+      - NODE_ID=cdn-node
     depends_on:
       - origin
       - mqtt-broker
