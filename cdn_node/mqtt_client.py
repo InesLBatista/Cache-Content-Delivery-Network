@@ -1,10 +1,8 @@
-# CDN Node - MQTT Client
-# TODO:
-# 1. Import an MQTT library (e.g., paho-mqtt or gmqtt).
-# 2. Implement a client that:
-#    - Connects to the MQTT broker.
-#    - Subscribes to the 'cdn/purge' topic.
-#    - On receiving a message, parses the JSON and calls cache_manager.purge_file().
+"""CDN Node – MQTT Client
+
+Subscribes to the 'cdn/purge' topic and calls cache_manager.purge_file()
+whenever the Origin Server publishes a cache invalidation message.
+"""
 
 import paho.mqtt.client as mqtt
 import json
@@ -12,50 +10,55 @@ import asyncio
 import os
 from cache_manager import purge_file
 
-# Configuração para o Docker
 MQTT_BROKER = os.getenv("MQTT_BROKER", "mqtt-broker")
-MQTT_TOPIC = "cdn/purge"
-NODE_ID = os.getenv("NODE_ID", "cdn-node-01")
+MQTT_TOPIC  = "cdn/purge"
+NODE_ID     = os.getenv("NODE_ID", "cdn-node-01")
+
 
 def on_connect(client, userdata, flags, rc):
-    """Callback for cdn connection with broker"""
+    """Called when the client connects to the broker."""
     if rc == 0:
-        print(f"CDN has been connected to MQTT Broker: {MQTT_BROKER}")
+        print(f"[{NODE_ID}] Connected to MQTT broker at {MQTT_BROKER}")
+        # QoS 1: broker will redeliver messages missed while the node was offline
         client.subscribe(MQTT_TOPIC, qos=1)
     else:
-        print(f"MQTT connection error. Code: {rc}")
+        print(f"[{NODE_ID}] MQTT connection failed. Code: {rc}")
+
 
 def on_message(client, userdata, msg):
-    """Callback when Origin sends a PURGE"""
+    """Called when a PURGE message is received from the broker."""
     try:
         data = json.loads(msg.payload.decode())
         filename = data.get("file")
-        
+
         if filename:
             print(f"[PURGE] Received purge request for: {filename}")
-            # Integra função assíncrona com loop do servidor
+            # Bridge async purge_file into the server's running event loop
             loop = userdata.get("loop")
             if loop:
                 asyncio.run_coroutine_threadsafe(purge_file(filename), loop)
-                
+
     except Exception as e:
-        print(f"Error in processing purge request: {e}")
+        print(f"[{NODE_ID}] Error processing purge message: {e}")
+
 
 def start_mqtt_client(loop):
-    """Starts the MQTT loop in the background"""
+    """Create and start the MQTT client in a background thread."""
+    # clean_session=False: broker retains undelivered QoS 1 messages while offline
     client = mqtt.Client(client_id=NODE_ID, clean_session=False, userdata={"loop": loop})
     client.on_connect = on_connect
     client.on_message = on_message
 
-    #reconexão automática
+    # Automatic reconnection with progressive backoff (1 s → 120 s)
     client.reconnect_delay_set(min_delay=1, max_delay=120)
 
+    # Last-will: broker publishes this if the node disconnects unexpectedly
     client.will_set(f"cdn/status/{NODE_ID}", payload="lost", qos=1, retain=True)
 
     try:
         client.connect(MQTT_BROKER, 1883, 60)
-        client.loop_start()  # Mantém conexão sem travar o código principal
+        client.loop_start()  # background thread — does not block the main server
         return client
     except Exception as e:
-        print(f"It was not possible to connect with the broker: {e}")
+        print(f"[{NODE_ID}] Could not connect to broker: {e}")
         return None

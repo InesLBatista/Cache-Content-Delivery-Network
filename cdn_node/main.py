@@ -31,25 +31,27 @@ ORIGIN_URL      = os.getenv("ORIGIN_URL", "http://origin:8000")
 CDN_PORT        = int(os.getenv("CDN_PORT", "8081"))
 
 # Timeout / retry settings (0.4)
-CONNECT_TIMEOUT = 5   # segundos para estabelecer ligação TCP
-TOTAL_TIMEOUT   = 10  # segundos para a resposta completa
-MAX_RETRIES     = 3   # tentativas antes de desistir
-RETRY_DELAYS    = [1, 2, 4]  # backoff exponencial em segundos
+CONNECT_TIMEOUT = 5   # seconds to establish TCP connection
+TOTAL_TIMEOUT   = 10  # seconds for the full response
+MAX_RETRIES     = 3   # attempts before giving up
+RETRY_DELAYS    = [1, 2, 4]  # exponential backoff in seconds
 
-# Fase 1 – Singleflight: mapeia filename → Future em curso
-# Evita que N pedidos simultâneos ao mesmo ficheiro gerem N pedidos à origem.
+NODE_ID = os.getenv("NODE_ID", "cdn-node")
+
+# Singleflight: maps filename → in-flight Future
+# Prevents N concurrent requests for the same uncached file from all hitting the origin.
 _inflight: dict[str, asyncio.Future] = {}
 
 # ── 0.3 – Validação de path traversal ────────────────────────────────────────
 
 def _safe_filename(filename: str) -> bool:
-    """Retorna True se o filename for seguro para usar como caminho de cache.
+    """Returns True if the filename is safe to use as a cache path.
 
-    Rejeita:
-    - Qualquer segmento com '..' (path traversal)
-    - Caminhos absolutos (começam por '/' ou '\\')
-    - Nomes com '\\' (separador Windows, inesperado aqui)
-    - Caminhos que, após resolução, saiam fora do CACHE_DIR
+    Rejects:
+    - Any segment containing '..' (path traversal)
+    - Absolute paths (starting with '/' or '\\')
+    - Names containing '\\' (unexpected Windows separator)
+    - Paths that, after resolution, escape CACHE_DIR
     """
     if ".." in filename or filename.startswith("/") or filename.startswith("\\") or "\\" in filename:
         return False
@@ -62,11 +64,11 @@ def _safe_filename(filename: str) -> bool:
 # ── 0.4 – Fetch com timeout e retry exponencial ──────────────────────────────
 
 async def _fetch_from_origin(filename: str) -> bytes:
-    """Faz GET ao Origin Server com timeout e até MAX_RETRIES tentativas.
+    """GET from the Origin Server with timeout and up to MAX_RETRIES attempts.
 
     Raises:
-        aiohttp.ClientError / asyncio.TimeoutError após esgotar as tentativas.
-        ValueError se a origem devolver um status != 200.
+        aiohttp.ClientError / asyncio.TimeoutError after exhausting retries.
+        ValueError if the origin returns a non-200 status.
     """
     timeout = aiohttp.ClientTimeout(
         connect=CONNECT_TIMEOUT,
@@ -85,10 +87,10 @@ async def _fetch_from_origin(filename: str) -> bytes:
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
             last_exc = exc
             if attempt < MAX_RETRIES:
-                print(f"[RETRY {attempt}/{MAX_RETRIES}] {filename} — {exc} — aguarda {delay}s")
+                print(f"[RETRY {attempt}/{MAX_RETRIES}] {filename} — {exc} — retrying in {delay}s")
                 await asyncio.sleep(delay)
             else:
-                print(f"[FAIL] {filename} — esgotadas {MAX_RETRIES} tentativas: {exc}")
+                print(f"[FAIL] {filename} — all {MAX_RETRIES} attempts exhausted: {exc}")
 
     raise last_exc
 
@@ -97,42 +99,42 @@ async def _fetch_from_origin(filename: str) -> bytes:
 async def handle_file_request(request: web.Request) -> web.Response:
     """GET /{filename}
 
-    Cache-hit  → lê do cache local e serve.
-    Cache-miss → vai buscar à origem (com timeout + retry), guarda no cache e serve.
+    Cache-hit  → read from local cache and serve.
+    Cache-miss → fetch from origin (with timeout + retry), save to cache, serve.
     """
     filename = request.match_info["filename"]
 
-    # 0.3 – Rejeitar nomes de ficheiro inseguros
+    # 0.3 – Reject unsafe filenames
     if not _safe_filename(filename):
         print(f"[BLOCKED] path traversal attempt: {filename!r}")
         return web.Response(status=403, text="Forbidden")
 
     # Cache hit
     if await cache_manager.exists(filename):
-        print(f"[HIT]  {filename}")
+        print(f"[HIT]  [{NODE_ID}] {filename}")
         data = await cache_manager.read_file(filename)
         return web.Response(body=data, content_type="application/octet-stream")
 
-    # Fase 1 – Coalescing: se já há um download em curso para este ficheiro,
-    # aguarda o mesmo Future em vez de lançar outro pedido à origem.
+    # Singleflight coalescing: if a download is already in progress for this
+    # file, wait on the same Future instead of launching another origin request.
     if filename in _inflight:
-        print(f"[COALESCE] {filename} — aguarda download em curso")
+        print(f"[COALESCE] [{NODE_ID}] {filename} — waiting for in-flight download")
         try:
             data = await asyncio.shield(_inflight[filename])
         except ValueError as exc:
             return web.Response(status=502, text=str(exc))
-        except (aiohttp.ClientError, asyncio.TimeoutError, Exception) as exc:
+        except Exception as exc:
             return web.Response(status=503, text=f"Origin unreachable: {exc}")
         return web.Response(body=data, content_type="application/octet-stream")
 
-    # Cache miss — este pedido é o "líder": cria o Future e faz o download.
+    # Cache miss — this request is the "leader": create the Future and fetch.
     future: asyncio.Future = asyncio.get_running_loop().create_future()
     _inflight[filename] = future
-    print(f"[MISS] {filename} — fetching from origin")
+    print(f"[MISS] [{NODE_ID}] {filename} — fetching from origin")
     try:
         data = await _fetch_from_origin(filename)
         await cache_manager.write_file(filename, data)
-        print(f"[CACHED] {filename}")
+        print(f"[CACHED] [{NODE_ID}] {filename}")
         future.set_result(data)
     except Exception as exc:
         future.set_exception(exc)
@@ -159,7 +161,6 @@ async def on_cleanup(app: web.Application) -> None:
         client.loop_stop()
         client.disconnect()
 
-# App factory & entry point
 def create_app() -> web.Application:
     cache_manager.ensure_cache_dir_exists()
 
@@ -172,5 +173,5 @@ def create_app() -> web.Application:
 
 if __name__ == "__main__":
     app = create_app()
-    print(f"CDN Node starting on port {CDN_PORT}, origin → {ORIGIN_URL}")
+    print(f"CDN Node [{NODE_ID}] starting on port {CDN_PORT}, origin → {ORIGIN_URL}")
     web.run_app(app, port=CDN_PORT)
