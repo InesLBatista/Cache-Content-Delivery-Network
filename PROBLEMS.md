@@ -8,6 +8,7 @@ O objectivo é evoluir de um protótipo funcional para uma plataforma tolerante 
 - ~~Persistência planeada mas **ainda não existe ficheiro docker-compose.yml** nem volumes configurados~~
 - ~~Não há contentorização efectiva~~
 - **Fase 0 concluída** — sistema containerizado, seguro e resiliente a falhas de rede
+- **Fases 1, 2 e 3 concluídas** — concorrência robusta, MQTT fiável, escalabilidade horizontal com round-robin
 
 ---
 
@@ -40,7 +41,7 @@ Implementada a função `_fetch_from_origin()` em `cdn_node/main.py`. Timeout de
 
 ---
 
-## Fase 2 – Fiabilidade do MQTT (purge garantido)
+## Fase 2 – Fiabilidade do MQTT (purge garantido) ✅
 
 O sistema actual usa QoS 0 e sessão não persistente, o que pode perder mensagens de purge se o CDN estiver temporariamente offline.
 
@@ -58,9 +59,11 @@ Definir um testamento que o broker publique se o CDN se desligar inesperadamente
 
 ---
 
-## Fase 3 – Escalabilidade horizontal (múltiplos nós geográficos)
+## Fase 3 – Escalabilidade horizontal (múltiplos nós com round-robin) ✅
 
-Para reduzir a latência real, a CDN deve ser composta por vários nós, cada um com o seu próprio volume de cache. Podem ser simulados no mesmo docker-compose.yml com nomes diferentes (ex: `cdn-node-lisboa`, `cdn-node-porto`). Cada nó expõe uma porta diferente no host. É necessário colocar um balanceador de carga à frente (HAProxy ou Nginx) que distribua os pedidos dos clientes. Para simular geodistribuição, o balanceador pode usar o endereço IP do cliente para o direccionar para o nó mais próximo.
+~~Para simular geodistribuição, o balanceador pode usar o endereço IP do cliente para o direccionar para o nó mais próximo.~~ Como o projecto é testado localmente, foi implementado balanceamento **round-robin** entre três nós CDN independentes.
+
+O `docker-compose.yml` define três instâncias do mesmo serviço CDN (`cdn-node-1`, `cdn-node-2`, `cdn-node-3`), cada uma com o seu próprio volume de cache (`cdn_cache_1/2/3`) e identidade MQTT (`NODE_ID`). Um serviço Nginx (`load-balancer`) expõe a porta **8090** no host e distribui os pedidos dos clientes em round-robin pelos três nós. A configuração está em `nginx/nginx.conf`. O header `X-CDN-Node` na resposta indica qual nó serviu cada pedido — útil para demonstração e análise no Wireshark.
 
 ---
 
