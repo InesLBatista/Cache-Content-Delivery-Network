@@ -9,6 +9,7 @@ O objectivo é evoluir de um protótipo funcional para uma plataforma tolerante 
 - ~~Não há contentorização efectiva~~
 - **Fase 0 concluída** — sistema containerizado, seguro e resiliente a falhas de rede
 - **Fases 1, 2 e 3 concluídas** — concorrência robusta, MQTT fiável, escalabilidade horizontal com round-robin
+- **Fase 4 concluída** — LRU com SQLite, TTL via Cache-Control, endpoint /cache/stats
 
 ---
 
@@ -67,17 +68,17 @@ O `docker-compose.yml` define três instâncias do mesmo serviço CDN (`cdn-node
 
 ---
 
-## Fase 4 – Gestão avançada da cache (tamanho máximo, LRU, TTL)
+## Fase 4 – Gestão avançada da cache (tamanho máximo, LRU, TTL) ✅
 
-Actualmente o cache pode crescer sem limites. Isto leva a esgotamento do disco.
+~~Actualmente o cache pode crescer sem limites. Isto leva a esgotamento do disco.~~
 
-### 4.1 Limitar o tamanho total da cache
+### 4.1 Limitar o tamanho total da cache ✅
 
-O CDN deve definir um limite máximo (ex: 10 GB). Periodicamente (ou sempre que um novo ficheiro é escrito), verifica-se o espaço ocupado. Se ultrapassar o limite, removem-se os ficheiros menos acedidos (LRU) até ficar abaixo do limite. Para tal, mantém-se um registo dos últimos acessos (pode ser guardado num ficheiro ou numa base de dados ligeira como SQLite).
+Implementado em `cdn_node/cache_manager.py`. Uma base de dados SQLite (`.cache_meta.db`) dentro do volume de cache regista `filename`, `last_accessed`, `size_bytes` e `expires_at` por cada ficheiro. Após cada `write_file`, a função `_evict_lru_if_needed()` soma o total de bytes; se ultrapassar `CACHE_MAX_BYTES`, remove os ficheiros com `last_accessed` mais antigo até ficar abaixo do limite. O limite é configurável via variável de ambiente `CACHE_MAX_BYTES` (padrão: 100 MB por nó, definido no `docker-compose.yml`). O endpoint `GET /cache/stats` expõe o estado actual da cache em JSON.
 
-### 4.2 Tempo de vida (TTL) como fallback
+### 4.2 Tempo de vida (TTL) como fallback ✅
 
-Mesmo com purges, um ficheiro pode ficar desactualizado se a origem falhar a enviar a mensagem. Deve ser suportado o cabeçalho `Cache-Control: max-age=...` vindo da origem. O CDN deve armazenar a data de expiração e, ao servir o ficheiro, verificar se ainda é válido. Se expirou, trata como cache miss.
+Implementado em `cdn_node/cache_manager.py` e `origin_server/main.py`. O Origin Server envia o cabeçalho `Cache-Control: public, max-age=N` quando `CACHE_TTL_SECONDS > 0` (configurável no `docker-compose.yml`, padrão 0). O CDN captura o cabeçalho durante o fetch, calcula `expires_at = now + max_age` e guarda-o na base de dados SQLite. Na função `exists()`, se `expires_at > 0` e o tempo actual ultrapassou esse valor, o ficheiro é apagado e a função retorna `False` — o pedido seguinte trata-o como cache miss e vai buscar uma versão actualizada à origem. O log mostra `[TTL-EXPIRED] filename`.
 
 ---
 

@@ -245,7 +245,96 @@ curl -s -o /dev/null -w "node-3 after restart: HTTP %{http_code}\n" http://local
 
 ---
 
-## 9. Stop the system
+## 9. Cache stats (Phase 4.1 – LRU)
+
+The `/cache/stats` endpoint on each node returns a JSON snapshot of its cache usage.
+
+```bash
+# Check cache stats on each node directly
+curl -s http://localhost:8081/cache/stats
+curl -s http://localhost:8082/cache/stats
+curl -s http://localhost:8083/cache/stats
+```
+
+```bash
+# Stats are also reachable through the load balancer (round-robin to one node)
+curl -s http://localhost:8090/cache/stats
+```
+
+Expected response:
+```json
+{
+  "total_files": 1,
+  "total_bytes": 220,
+  "max_bytes": 104857600,
+  "usage_pct": 0.01,
+  "node_id": "cdn-node-1"
+}
+```
+
+---
+
+## 10. TTL expiry (Phase 4.2)
+
+Demonstrates that cached files expire automatically when the origin sends a
+`Cache-Control: max-age=N` header. To test this, temporarily set `CACHE_TTL_SECONDS`
+on the origin service in `docker-compose.yml` and restart it.
+
+```bash
+# Step 1: set CACHE_TTL_SECONDS=30 in docker-compose.yml for the origin service,
+# then restart only the origin container (no rebuild needed)
+docker compose up -d --no-deps origin
+```
+
+```bash
+# Step 2: confirm the origin is now sending Cache-Control
+# Expected: Cache-Control: public, max-age=30
+curl -s -I http://localhost:8001/test.txt | grep -i "cache-control"
+```
+
+```bash
+# Step 3: purge the cache so nodes re-fetch with the new TTL
+curl -X POST http://localhost:8001/purge \
+     -H "Content-Type: application/json" \
+     -d '{"file": "test.txt"}'
+```
+
+```bash
+# Step 4: fetch the file — nodes cache it with a 30s expiry
+# Node logs show: [META] test.txt — 220 bytes, TTL 30s
+curl -s http://localhost:8081/test.txt > /dev/null
+curl -s http://localhost:8081/cache/stats
+```
+
+```bash
+# Step 5: inspect the SQLite DB inside the container to see expires_at
+docker exec cdn-node-1 python3 -c "
+import sqlite3, time
+conn = sqlite3.connect('/app/cache/.cache_meta.db')
+for r in conn.execute('SELECT filename, size_bytes, expires_at FROM cache_meta'):
+    ttl = int(r[2] - time.time()) if r[2] > 0 else 'no TTL'
+    print(f'  {r[0]}  {r[1]}B  TTL remaining: {ttl}s')
+"
+```
+
+```bash
+# Step 6: wait for the TTL to elapse, then request the file again.
+# The CDN detects the expiry in exists(), deletes the file, and treats it as a Miss.
+# Node logs show: [TTL-EXPIRED] test.txt — removed from cache
+# Followed by:    [MISS] [cdn-node-1] test.txt — fetching from origin
+sleep 31 && curl -s -o /dev/null -w "After TTL expiry → HTTP %{http_code}\n" \
+  http://localhost:8081/test.txt
+```
+
+```bash
+# Step 7: restore TTL=0 (no expiry) when done
+# Edit CACHE_TTL_SECONDS=0 in docker-compose.yml, then:
+docker compose up -d --no-deps origin
+```
+
+---
+
+## 11. Stop the system
 
 ```bash
 # Stop all containers but keep the volumes (cache preserved)
@@ -257,7 +346,6 @@ docker compose down
 # Use this when you want to start completely fresh
 docker compose down -v
 ```
-
 ---
 
 ## Endpoint reference
@@ -265,9 +353,13 @@ docker compose down -v
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `localhost:8090/{filename}` | GET | Request a file via the load balancer (round-robin) |
+| `localhost:8090/cache/stats` | GET | Cache usage stats (round-robin to one node) |
 | `localhost:8081/{filename}` | GET | Request directly from cdn-node-1 (debug) |
+| `localhost:8081/cache/stats` | GET | Cache stats for cdn-node-1 specifically |
 | `localhost:8082/{filename}` | GET | Request directly from cdn-node-2 (debug) |
+| `localhost:8082/cache/stats` | GET | Cache stats for cdn-node-2 specifically |
 | `localhost:8083/{filename}` | GET | Request directly from cdn-node-3 (debug) |
+| `localhost:8083/cache/stats` | GET | Cache stats for cdn-node-3 specifically |
 | `localhost:8001/{filename}` | GET | Request a file directly from the origin |
 | `localhost:8001/purge` | POST `{"file": "..."}` | Trigger cache invalidation on all nodes via MQTT |
 
@@ -276,8 +368,11 @@ docker compose down -v
 | Log entry | Meaning |
 |-----------|---------|
 | `[MISS] [cdn-node-N] filename` | Cache miss — node fetches from origin |
-| `[CACHED] [cdn-node-N] filename` | File successfully saved to that node's cache |
+| `[CACHED] [cdn-node-N] filename` | File successfully saved to cache |
 | `[HIT] [cdn-node-N] filename` | Cache hit — node serves from its local disk |
+| `[META] filename — NB, TTL Xs` | File metadata stored: size and TTL (or "no TTL") |
+| `[TTL-EXPIRED] filename` | TTL elapsed — file deleted, next request is a Miss |
+| `[LRU-EVICT] filename` | File evicted because cache exceeded size limit |
 | `[COALESCE] [cdn-node-N] filename` | Concurrent miss coalesced — waiting for in-flight download |
 | `[PURGE] Received purge request for: filename` | Node received MQTT message and deleted local copy |
 | `[BLOCKED] path traversal attempt` | Path traversal attempt blocked (403) |

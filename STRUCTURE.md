@@ -51,7 +51,7 @@ The cache node that interacts directly with clients. The same Docker image runs 
 - **Path Traversal Guard** (`main.py` – `_safe_filename()`): rejects filenames containing `..`, `/`, or `\`, and verifies the resolved path stays within `CACHE_DIR`. Returns **403 Forbidden** on violation.
 - **Origin Fetcher** (`main.py` – `_fetch_from_origin()`): fetches files from the origin with a 5 s connect timeout and 10 s total timeout. Retries up to 3 times with exponential backoff (1 s → 2 s → 4 s). Returns **503** if the origin is unreachable, **502** if the origin returns an error status.
 - **Singleflight / Coalescing** (`main.py`): if multiple concurrent requests arrive for the same uncached file, only one fetch is sent to the origin. All other requests wait on the same `asyncio.Future` and receive the result when it resolves.
-- **Cache Manager** (`cache_manager.py`): checks file existence, reads with `aiofiles`, writes atomically via a `.tmp` file + `os.replace()` to avoid partial content exposure.
+- **Cache Manager** (`cache_manager.py`): checks file existence (with TTL expiry check), reads with `aiofiles` (updates `last_accessed`), writes atomically via a `.tmp` file + `os.replace()`. Maintains a SQLite database (`.cache_meta.db`) inside the cache volume tracking `filename`, `last_accessed`, `size_bytes`, and `expires_at` per file. After each write, triggers LRU eviction if total size exceeds `CACHE_MAX_BYTES`. Exposes `cache_stats()` for the `/cache/stats` endpoint.
 - **MQTT Client** (`mqtt_client.py`): subscribes to `cdn/purge` with QoS 1 and a persistent session (`clean_session=False`), so messages queued while the node is offline are delivered on reconnect. Runs in a background thread via `paho-mqtt`'s `loop_start()`. Configures automatic reconnection and a last-will message.
 
 ### 2.2. Origin Server (`origin_server/`)
@@ -113,6 +113,8 @@ All incoming filenames are validated by `_safe_filename()` before any cache or f
 | `MQTT_BROKER` | `mqtt-broker` | Hostname of the MQTT broker |
 | `CDN_PORT` | `8081` | Port each CDN node listens on (internal) |
 | `NODE_ID` | `cdn-node` | Unique identity for MQTT client and log prefixes |
+| `CACHE_MAX_BYTES` | `104857600` (100 MB) | Maximum total cache size per node before LRU eviction triggers |
+| `CACHE_TTL_SECONDS` | `0` (disabled) | If > 0, origin sends `Cache-Control: max-age=N`; CDN nodes expire entries after N seconds |
 
 All variables are set explicitly in `docker-compose.yml`.
 
@@ -157,7 +159,6 @@ All variables are set explicitly in `docker-compose.yml`.
 
 The following are the main areas where the system will evolve. Full details in [PROBLEMS.md](./PROBLEMS.md).
 
-- **Phase 4** – Advanced cache management (LRU eviction, TTL / `Cache-Control` support)
 - **Phase 5** – Observability (Prometheus metrics, structured JSON logs, health endpoints)
 - **Phase 6** – Security hardening (rate limiting, MQTT authentication, HTTPS)
 - **Phase 7** – Load and resilience testing (Locust / k6)

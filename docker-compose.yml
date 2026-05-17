@@ -1,6 +1,6 @@
 services:
 
-  # MQTT Broker 
+  # ─── MQTT Broker ────────────────────────────────────────────────────────────
   mqtt-broker:
     image: eclipse-mosquitto:2.0
     container_name: mqtt-broker
@@ -12,7 +12,7 @@ services:
       - mqtt_logs:/mosquitto/log
     restart: unless-stopped
 
-  # Origin Server 
+  # ─── Origin Server ──────────────────────────────────────────────────────────
   origin:
     build:
       context: ./origin_server
@@ -24,11 +24,12 @@ services:
       - ./origin_server/storage:/app/storage
     environment:
       - MQTT_BROKER=mqtt-broker
+      - CACHE_TTL_SECONDS=0   # set > 0 to enable TTL (e.g. 60 for 60s expiry)
     depends_on:
       - mqtt-broker
     restart: unless-stopped
 
-  # CDN Node 1 
+  # ─── CDN Node 1 ─────────────────────────────────────────────────────────────
   cdn-node-1:
     build:
       context: ./cdn_node
@@ -43,12 +44,13 @@ services:
       - MQTT_BROKER=mqtt-broker
       - CDN_PORT=8081
       - NODE_ID=cdn-node-1
+      - CACHE_MAX_BYTES=104857600   # 100 MB per node
     depends_on:
       - origin
       - mqtt-broker
     restart: unless-stopped
 
-  # CDN Node 2
+  # ─── CDN Node 2 ─────────────────────────────────────────────────────────────
   cdn-node-2:
     build:
       context: ./cdn_node
@@ -63,12 +65,13 @@ services:
       - MQTT_BROKER=mqtt-broker
       - CDN_PORT=8081
       - NODE_ID=cdn-node-2
+      - CACHE_MAX_BYTES=104857600   # 100 MB per node
     depends_on:
       - origin
       - mqtt-broker
     restart: unless-stopped
 
-  # CDN Node 3 
+  # ─── CDN Node 3 ─────────────────────────────────────────────────────────────
   cdn-node-3:
     build:
       context: ./cdn_node
@@ -83,12 +86,13 @@ services:
       - MQTT_BROKER=mqtt-broker
       - CDN_PORT=8081
       - NODE_ID=cdn-node-3
+      - CACHE_MAX_BYTES=104857600   # 100 MB per node
     depends_on:
       - origin
       - mqtt-broker
     restart: unless-stopped
 
-  # Load Balancer (Nginx – round-robin) 
+  # ─── Load Balancer (Nginx – round-robin) ────────────────────────────────────
   load-balancer:
     image: nginx:1.27-alpine
     container_name: load-balancer
@@ -102,7 +106,7 @@ services:
       - cdn-node-3
     restart: unless-stopped
 
-# Persistent volumes (one per CDN node + broker) 
+# ─── Persistent volumes (one per CDN node + broker) ─────────────────────────
 volumes:
   cdn_cache_1:
     driver: local

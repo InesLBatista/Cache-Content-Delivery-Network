@@ -21,6 +21,7 @@ import os
 import asyncio
 import aiohttp
 from aiohttp import web
+from typing import Optional
 
 import cache_manager
 import mqtt_client
@@ -63,8 +64,11 @@ def _safe_filename(filename: str) -> bool:
 
 # ── 0.4 – Fetch com timeout e retry exponencial ──────────────────────────────
 
-async def _fetch_from_origin(filename: str) -> bytes:
+async def _fetch_from_origin(filename: str) -> tuple[bytes, Optional[str]]:
     """GET from the Origin Server with timeout and up to MAX_RETRIES attempts.
+
+    Returns a tuple of (file_bytes, cache_control_header).
+    cache_control_header is None if the origin did not send one.
 
     Raises:
         aiohttp.ClientError / asyncio.TimeoutError after exhausting retries.
@@ -83,7 +87,9 @@ async def _fetch_from_origin(filename: str) -> bytes:
                 async with session.get(url) as resp:
                     if resp.status != 200:
                         raise ValueError(f"Origin returned {resp.status} for '{filename}'")
-                    return await resp.read()
+                    data = await resp.read()
+                    cc = resp.headers.get("Cache-Control")  # 4.2 – capture TTL header
+                    return data, cc
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
             last_exc = exc
             if attempt < MAX_RETRIES:
@@ -132,8 +138,8 @@ async def handle_file_request(request: web.Request) -> web.Response:
     _inflight[filename] = future
     print(f"[MISS] [{NODE_ID}] {filename} — fetching from origin")
     try:
-        data = await _fetch_from_origin(filename)
-        await cache_manager.write_file(filename, data)
+        data, cache_control = await _fetch_from_origin(filename)
+        await cache_manager.write_file(filename, data, cache_control=cache_control)
         print(f"[CACHED] [{NODE_ID}] {filename}")
         future.set_result(data)
     except Exception as exc:
@@ -144,6 +150,24 @@ async def handle_file_request(request: web.Request) -> web.Response:
         _inflight.pop(filename, None)
 
     return web.Response(body=data, content_type="application/octet-stream")
+
+
+async def handle_cache_stats(request: web.Request) -> web.Response:
+    """GET /cache/stats
+
+    Returns a JSON snapshot of this node's cache usage:
+      - total_files : number of files currently in cache
+      - total_bytes : total size of cached files in bytes
+      - max_bytes   : configured size limit (CACHE_MAX_BYTES)
+      - usage_pct   : percentage of the limit currently used
+    """
+    import json
+    stats = cache_manager.cache_stats()
+    stats["node_id"] = NODE_ID
+    return web.Response(
+        text=json.dumps(stats, indent=2),
+        content_type="application/json",
+    )
 
 # Application lifecycle hooks
 
@@ -165,7 +189,10 @@ def create_app() -> web.Application:
     cache_manager.ensure_cache_dir_exists()
 
     app = web.Application()
-    app.add_routes([web.get("/{filename}", handle_file_request)])
+    app.add_routes([
+        web.get("/cache/stats", handle_cache_stats),
+        web.get("/{filename}", handle_file_request),
+    ])
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
     return app
